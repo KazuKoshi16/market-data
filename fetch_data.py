@@ -13,6 +13,14 @@ from pathlib import Path
 
 OUTPUT_DIR = Path("data")
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+# 財務省アクセス用：ブラウザに見せかけるUser-Agent
+MOF_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+    "Referer": "https://www.mof.go.jp/jgbs/reference/interest_rate/index.htm",
+}
 HEADERS = {"User-Agent": "Mozilla/5.0 (market-data-fetcher/1.0)"}
 
 # ── ユーティリティ ──────────────────────────────────────────
@@ -60,19 +68,23 @@ def fetch_fx():
     cur = datetime.strptime(from_date, "%Y-%m-%d")
     end = datetime.strptime(to_date, "%Y-%m-%d")
     while cur <= end:
-        chunk_end = min(datetime(cur.year + 1, cur.month, cur.day) - timedelta(days=1), end)
+        try:
+            chunk_end = min(datetime(cur.year + 1, cur.month, cur.day) - timedelta(days=1), end)
+        except ValueError:
+            chunk_end = min(datetime(cur.year + 1, 1, 1) - timedelta(days=1), end)
         cf, ct = cur.strftime("%Y-%m-%d"), chunk_end.strftime("%Y-%m-%d")
         for col, base, sym in [("USD_JPY","USD","JPY"),("EUR_JPY","EUR","JPY")]:
             try:
                 url = f"https://api.frankfurter.dev/v1/{cf}..{ct}?base={base}&symbols={sym}"
                 r = requests.get(url, headers=HEADERS, timeout=30)
                 r.raise_for_status()
-                for d, rates in r.json().get("rates", {}).items():
+                data = r.json()
+                for d, rates in data.get("rates", {}).items():
                     v = rates.get(sym)
                     if v:
                         if d not in new_rows: new_rows[d] = {}
                         new_rows[d][col] = round(v, 2)
-                print(f"  [{col}] {cf}..{ct} → {len(r.json().get('rates',{}))}件")
+                print(f"  [{col}] {cf}..{ct} → {len(data.get('rates',{}))}件")
             except Exception as e:
                 print(f"  [ERROR] {col} {cf}: {e}")
         cur = chunk_end + timedelta(days=1)
@@ -96,6 +108,30 @@ def wareki_to_iso(s):
     base = {"M":1868,"T":1912,"S":1926,"H":1989,"R":2019}[m.group(1)]
     return f"{base+int(m.group(2))-1}-{m.group(3).zfill(2)}-{m.group(4).zfill(2)}"
 
+def parse_mof_csv(text, last_date=None, label=""):
+    new_data = {}
+    header_found = False
+    count = 0
+    for line in text.splitlines():
+        cols = [c.strip() for c in line.split(",")]
+        if not header_found:
+            if "10N" in cols:
+                header_found = True
+            continue
+        d = wareki_to_iso(cols[0])
+        if not d: continue
+        if last_date and label == "最新" and d <= last_date: continue
+        if d not in new_data: new_data[d] = {}
+        for col, idx in MOF_COLS.items():
+            if idx < len(cols):
+                v = cols[idx]
+                if v and v not in ("-","－","ND"):
+                    try: new_data[d][col] = round(float(v), 3)
+                    except: pass
+        count += 1
+    print(f"  [財務省/{label}] {count}件パース (header_found={header_found})")
+    return new_data
+
 def fetch_jgb():
     print("=== jgb_daily.csv ===")
     path = OUTPUT_DIR / "jgb_daily.csv"
@@ -111,28 +147,16 @@ def fetch_jgb():
     new_data = {}
     for label, url in urls:
         try:
-            r = requests.get(url, headers=HEADERS, timeout=60)
+            print(f"  [財務省/{label}] 取得中: {url}")
+            r = requests.get(url, headers=MOF_HEADERS, timeout=60)
+            print(f"  [財務省/{label}] ステータス: {r.status_code}, サイズ: {len(r.content)}bytes")
             r.raise_for_status()
             text = r.content.decode("shift-jis", errors="replace")
-            header_found = False
-            count = 0
-            for line in text.splitlines():
-                cols = [c.strip() for c in line.split(",")]
-                if not header_found:
-                    if "10N" in cols: header_found = True
-                    continue
-                d = wareki_to_iso(cols[0])
-                if not d: continue
-                if label == "最新" and last_date and d <= last_date: continue
-                if d not in new_data: new_data[d] = {}
-                for col, idx in MOF_COLS.items():
-                    if idx < len(cols):
-                        v = cols[idx]
-                        if v and v not in ("-","－","ND"):
-                            try: new_data[d][col] = round(float(v), 3)
-                            except: pass
-                count += 1
-            print(f"  [財務省/{label}] {count}件")
+            # 最初の数行を確認
+            first_lines = text.splitlines()[:5]
+            print(f"  [財務省/{label}] 先頭行: {first_lines[:2]}")
+            parsed = parse_mof_csv(text, last_date, label)
+            new_data.update(parsed)
         except Exception as e:
             print(f"  [ERROR] 財務省/{label}: {e}")
 
