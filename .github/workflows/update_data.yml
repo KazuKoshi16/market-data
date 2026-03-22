@@ -1,0 +1,35 @@
+name: Update Market Data
+
+on:
+  schedule:
+    - cron: '0 1 * * 2'  # 毎週火曜日 JST 10:00（UTC 01:00）
+  workflow_dispatch:       # 手動実行も可能
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch market data
+        run: python fetch_data.py
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --staged --quiet || git commit -m "data: update market data $(date +'%Y-%m-%d')"
+          git push
