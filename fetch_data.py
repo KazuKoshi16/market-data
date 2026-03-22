@@ -115,7 +115,7 @@ def parse_mof_csv(text, last_date=None, label=""):
     for line in text.splitlines():
         cols = [c.strip() for c in line.split(",")]
         if not header_found:
-            if "10N" in cols:
+            if "10年" in cols or "10N" in cols:
                 header_found = True
             continue
         d = wareki_to_iso(cols[0])
